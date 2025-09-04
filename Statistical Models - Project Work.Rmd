@@ -1,0 +1,1078 @@
+---
+title: "Statistical Models - Project Work"
+subtitle: "Master in Artificial Intelligence and Data Science a.a. 2024/2025"
+author: "Marco Longo - Francesca Ricci - Maria Rotella"
+date: "2025-03-15"
+output: pdf_document
+lang: it
+header-includes:
+  - \usepackage{listings}  
+  - \lstset{basicstyle=\footnotesize} 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+\vspace{80pt}
+
+\begin{center}
+\Large\textbf{ANALISI DI SOPRAVVIVENZA} \\[0.5cm]
+\Large Caso di studio: permanenza dei dipendenti in azienda  \\[0.4cm]
+\end{center}
+
+\newpage
+
+\tableofcontents
+
+\newpage
+
+# Introduzione
+
+\medskip
+
+## Obiettivo
+
+Utilizzando le tecniche apprese nel corso *Statistical Models*, il presente studio applica l’**analisi di sopravvivenza** al tema della permanenza dei dipendenti in azienda (*employee churn*).\
+L’obiettivo è identificare il profilo dei dipendenti a maggior rischio di abbandono, analizzando i fattori che ne influenzano *significativamente* il tempo all’evento, ossia la fine del rapporto di lavoro tra il dipendente e l’azienda.\
+
+\vspace{16pt}
+
+## Fonte dei dati
+
+Il dataset utilizzato è un campione estratto dal dataset [**hr-dataset**](https://www.kaggle.com/datasets/kadirduran/hr-dataset/data/){.uri} disponibile su [*Kaggle.com*](https://www.kaggle.com){.uri}.\  
+Esso consiste in un file CSV con 500 osservazioni, ciascuna riferita ad un dipendente.
+
+\vspace{16pt}
+
+## Allegati
+
+Si allegano alla presente:
+
+-   il file Rmarkdown con cui è stata generata la relazione finale
+
+-   il dataset CSV utilizzato
+
+
+\medskip
+
+\newpage
+
+# Analisi di Sopravvivenza
+
+\medskip
+
+## Dataset
+
+Il dataset contiene 500 osservazioni, una per ogni dipendente, ed include 10 variabili di tipo numerico e di tipo categoriale.
+
+Per l’analisi di sopravvivenza, le due variabili chiave sono:
+
+-   *time_spend_company*: indica gli **anni** trascorsi in azienda (*follow up*);
+
+-   *left*: variabile binaria che rappresenta l'**evento** oggetto di
+    studio, indicando l'uscita del dipendente (1 = uscita, 0 =
+    permanenza). La tipologia di uscita (dimissioni, licenziamento,
+    scadenza o mancato rinnovo) non è specificata e non rientrerà
+    nell’analisi.
+
+Le altre covariate:
+
+-   *satisfaction_level*: indice di soddisfazione (decimale tra 0 ed 1)
+
+-   *last_evaluation*: ultima valutazione ricevuta (decimale tra 0 ed 1)
+
+-   *number_project*: numero di progetti in carico al dipendente
+
+-   *average_monthly_hours*: media delle ore mensili lavorate
+
+-   *work_accident*: incidenti sul lavoro (0 = no, 1 = sì)
+
+-   *promotion_last_5years*: promozioni negli ultimi 5 anni (0
+    = no, 1 = sì)
+
+-   *department*: reparto aziendale (es. marketing, support, sales, HR, IT)
+
+-   *salary*: livello salariale (low, medium, high)
+
+\medskip 
+
+```{r }
+library(readr)
+hr.df <- read.csv("dataset\\hr.csv")
+
+```
+
+\newpage
+
+## Analisi preliminare
+
+\medskip
+
+In questa sezione viene fatta un'analisi preliminare del dataset, che ne aiuta a comprendere la struttura sia attraverso descrizioni statistiche sia tramite rappresentazioni grafiche.
+
+\medskip
+
+### Evento e censura
+
+\medskip
+
+La tabella riporta il numero di dipendenti che hanno lasciato l’azienda (evento) e quelli per cui l’evento non si è verificato durante il follow up (censura).\
+
+Si conta circa un quarto dei dipendenti per cui l'evento si manifesta.
+
+\medskip
+
+```{r }
+tab <- table(hr.df$left)
+names(tab) <- c("censura", "evento")
+tab.prop <- prop.table(tab)
+
+df.tab <- data.frame(
+  state = names(tab),
+  count = as.numeric(tab),
+  perc = round(100 * as.numeric(tab.prop), 2)
+)
+
+library(knitr)
+kable(df.tab, col.names = c("", "count", "perc (%)"))
+```
+
+\medskip
+
+A scopo puramente illustrativo si visualizzano, nel grafico seguente, 30 dipendenti estratti casualmente dal dataframe. Si evidenziano i tempi differenti (riportati a *t0*) di permanenza in azienda, per quanto riguarda sia la censura che il manifestarsi dell'evento.
+
+\medskip
+
+```{r }
+library(dplyr)
+library(ggplot2)
+
+set.seed(123)
+
+df_sample <- hr.df %>% sample_n(30)
+df_sample$Index <- 1:nrow(df_sample)
+
+ggplot(df_sample, aes(x = time_spend_company, y = Index)) +
+  geom_segment(aes(x = 0, xend = time_spend_company, y = Index, yend = Index), color = "black") +
+  geom_point(aes(x = time_spend_company, color = factor(left)), size = 3) +  
+  scale_color_manual(values = c("blue3", "red2"), labels = c("Censura", "Evento")) +
+  scale_x_continuous(breaks = seq(min(df_sample$time_spend_company), max(df_sample$time_spend_company), by = 1)) +  
+  labs(x = "anni", y = "dipendenti", title = "Permanenza in azienda (campione casuale di 30 dipendenti)") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+```
+
+\newpage
+
+### Tempo di permanenza
+
+\medskip
+
+```{r }
+ggplot(hr.df, aes(x = time_spend_company)) +
+  geom_histogram(binwidth = 1, fill = "#4DAF4A", color = "white", alpha = 0.8) +
+  scale_x_continuous(breaks = seq(min(hr.df$time_spend_company), max(hr.df$time_spend_company), by = 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Distribuzione del Tempo trascorso in azienda",
+    x = "anni in azienda", 
+    y = "dipendenti"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(color = "black")
+  )
+
+```
+
+\medskip
+
+La media del tempo di permanenza per il campione osservato è di circa di 3 anni e mezzo.\
+
+\medskip
+
+```{r }
+summary_total <- hr.df %>%
+  summarise(
+    count = n(),
+    min = min(time_spend_company, na.rm = TRUE),
+    q1 = quantile(time_spend_company, 0.25, na.rm = TRUE),
+    median = median(time_spend_company, na.rm = TRUE),
+    mean = mean(time_spend_company, na.rm = TRUE),
+    q3 = quantile(time_spend_company, 0.75, na.rm = TRUE),
+    max = max(time_spend_company, na.rm = TRUE),
+    sd = sd(time_spend_company, na.rm = TRUE)
+  )
+
+kable(summary_total)
+
+```
+
+\medskip
+
+```{r }
+ggplot(hr.df, aes(x = time_spend_company, fill = factor(left))) +
+  geom_histogram(binwidth = 1, position = "identity", alpha = 0.5, color = "white") +
+  scale_fill_manual(values = c("#1F78B4", "#FF7F00"), labels = c("Rimasti (censura)", "Usciti (evento)")) +
+  scale_x_continuous(breaks = seq(min(hr.df$time_spend_company), max(hr.df$time_spend_company), by = 1)) +
+  labs(
+    title = "Distribuzione del Tempo trascorso in azienda in base all'evento",
+    x = "anni in azienda", 
+    y = "dipendenti",
+    fill = ""
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(color = "black"),
+    legend.position = "top",
+    legend.title = element_blank()
+  )
+
+```
+
+\medskip
+
+Di seguito la *summarise* che tiene conto dell'evento.\
+Il valore mediano del tempo trascorso in azienda di chi lascia è pari a 4 anni.
+
+\medskip
+
+```{r}
+summary_by_left <- hr.df %>%
+  group_by(left) %>%
+  summarise(
+    count = n(),
+    min = min(time_spend_company, na.rm = TRUE),
+    q1 = quantile(time_spend_company, 0.25, na.rm = TRUE),
+    median = median(time_spend_company, na.rm = TRUE),
+    mean = mean(time_spend_company, na.rm = TRUE),
+    q3 = quantile(time_spend_company, 0.75, na.rm = TRUE),
+    max = max(time_spend_company, na.rm = TRUE),
+    sd = sd(time_spend_company, na.rm = TRUE)
+  )
+
+kable(summary_by_left)
+```
+
+\newpage
+
+### Covariate
+
+\medskip
+
+In questa sezione si effettua un'analisi preliminare delle covariate in relazione all'evento.\
+
+\medskip
+
+Il pair plot seguente evidenzia la correlazione tra le variabili numeriche del dataset.\
+
+\medskip
+
+```{r }
+library(GGally)
+library(ggplot2)
+
+labels <- c(
+  "num projects"  = "number_project", 
+  "satisfaction"  = "satisfaction_level", 
+  "evaluation"    = "last_evaluation", 
+  "hours"         = "average_montly_hours"
+)
+
+ggpairs(
+  hr.df[, unname(labels)], 
+  columnLabels = names(labels),
+  lower = list(continuous = wrap("smooth", color = "#0072B2", size = 0.5)),  
+  diag  = list(continuous = wrap("densityDiag", fill = "#56B4E9", alpha = 0.3)), 
+  upper = list(continuous = wrap("cor", size = 3.5, color = "#333333"))
+) +  
+  theme_classic() +  
+  theme(
+    panel.grid = element_blank(),
+    axis.text  = element_text(size = 10, color = "grey30"),  
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10, color = "black")  
+  )
+
+```
+
+\medskip
+
+Si evince una correlazione diretta tra il numero di progetti e le ore medie mensili lavorate, a loro volta correlate anche al livello di valutazione del dipendente: più ore lavora, più è alta la valutazione nei suoi confronti da parte dell'azienda.\
+Ma al crescere del carico di lavoro (ore e progetti), la soddisfazione percepita dal lavoratore decresce.\
+
+\newpage
+
+I grafici di seguito mostrano la distribuzione dell’**evento** in relazione ai valori delle covariate.
+
+\medskip
+
+```{r }
+library(patchwork)
+
+custom.colors <- c("1" = "#E34A33", "0" = "#5A88C5")
+
+p1 <- ggplot(hr.df, aes(x = factor(salary, levels = c("low", "medium", "high")), fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Fascia salariale", x = "", y = "distribuzione", fill = "Stato") +
+  theme(legend.title = element_blank())
+
+p2 <- ggplot(hr.df, aes(x = department, fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Reparto", x = "", y = "", fill = "Stato") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  theme(legend.title = element_blank())
+
+p_temp <- ggplot(hr.df, aes(x = as.factor(time_spend_company), fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Anni in azienda", x = "", y = "distribuzione", fill = "Stato") +
+  theme(legend.title = element_blank())
+
+p3 <- ggplot(hr.df, aes(x = factor(work_accident, levels = c(0, 1), 
+                                   labels = c("No", "Sì")), fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Infortuni", x = "", y = "distribuzione", fill = "Stato") +
+  theme(legend.title = element_blank())
+
+p4 <- ggplot(hr.df, aes(x = factor(promotion_last_5years, levels = c(0, 1), 
+                                   labels = c("No", "Sì")), fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Promozione", x = "", y = "", fill = "Stato") +
+  theme(legend.title = element_blank())
+
+(p1 + p2) / (p3 + p4) +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+```
+\medskip
+
+Come da aspettative, la **fascia salariale** sembra influire sulla permanenza in azienda: per stipendi bassi si registra un numero maggiore di abbandoni rispetto alle altre fasce.\
+Per alcuni dei **reparti** in cui si lavora, si notano delle differenze sulla distribuzione di abbandono: ad esempio di nota un minore numero di eventi per il *management* rispetto a chi lavora in *HR* o in reparti *tecnici*.\
+Si registrano meno abbandoni per chi ha avuto **infortuni** sul lavoro, probabilmente perché l'azienda potrebbe aver gestito bene quanto accaduto (mediante assicurazione o altre forme di attenzione e sostegno).\
+Come per gli stipendi, anche il fatto di aver ricevuto una **promozione** negli ultimi cinque anni sembra incidere sulla permanenza in azienda.\
+
+\medskip
+
+\newpage
+
+Sulle restanti covariate è necessario creare delle fasce per renderle categoriali. In particolare, sia per gli indici di soddisfazione e di valutazione (decimali da 0 a 1), sia per le ore mensili medie lavorate.
+
+\medskip
+
+```{r echo=TRUE}
+hr.df$hours_cat <- cut(hr.df$average_montly_hours,
+                        breaks = quantile(hr.df$average_montly_hours, 
+                                          probs = seq(0, 1, length.out=6), na.rm = TRUE),  
+                        labels = c("minimal","reduced","standard","extended","overtime"),
+                        include.lowest = TRUE)
+
+hr.df$satisfaction_cat <- cut(hr.df$satisfaction_level, breaks = c(0,0.25,0.50,0.75,1), 
+                                   labels = c("very low", "low", "high", "very high"),
+                                   include.lowest = TRUE)
+hr.df$evaluation_cat <- cut(hr.df$last_evaluation, breaks = c(0.25, 0.5, 0.75, 1), 
+                                 labels = c("low", "moderate", "high"),
+                                 include.lowest = TRUE)
+```
+
+\medskip
+
+```{r }
+p5 <- ggplot(hr.df, aes(x = hr.df$hours_cat, fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Ore lavorate", x = "", y = "", fill = "Stato") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  theme(legend.title = element_blank())
+
+p6 <- ggplot(hr.df, aes(x = hr.df$number_project, fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Numero progetti", x = "", y = "", fill = "Stato")+
+  theme(legend.title = element_blank())
+
+p7 <- ggplot(hr.df, aes(x = hr.df$satisfaction_cat, fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Livello di soddisfazione", x = "", y = "", fill = "Stato")+
+  theme(legend.title = element_blank())
+
+p8 <- ggplot(hr.df, aes(x = hr.df$evaluation_cat, fill = as.factor(left))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = custom.colors, labels = c("Rimasti", "Usciti")) +
+  theme_minimal() +
+  labs(title = "Churn per Valutazione recente", x = "", y = "", fill = "Stato")+
+  theme(legend.title = element_blank())
+
+
+(p5 + p6) / (p7 + p8) +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+```
+
+Le **ore mensili** di lavoro presentano diversi livelli di chunk: il livello standard, corrispondente alla fascia centrale, risulta essere il più comunemente accettato dai dipendenti, mentre livelli *overtime* portano evidentemente il dipendente ad abbondonare l'azienda. Anche chi lavora poche ore ha un'alta probabilità che si manifesti l'evento, probabilmente perché si sente inutilizzato in base alle proprie aspettative o potenzialità.\
+Analogamente si può ragionare per numero di **progetti** assegnati: ad abbandonare l'azienda sono coloro che si sentono sovraccarichi (6-7 progetti contemporaneamente) o poco "utilizzati" (2 progetti), spesso sinonimo di poca fiducia.\
+Andamento come da aspettative anche per i livelli di **soddisfazione**: abbandona di più chi è insoddisfatto.\
+La recente **valutazione** effettuata sul dipendente mostra abbandoni sulla fascia bassa, ma anche su quella alta, probabilmente perché i dipendenti più validi sono anche quelli più richiesti dal mercato.
+
+\newpage
+
+## Stimatore di Kaplan Meier
+
+\medskip
+
+L'analisi della sopravvivenza attraverso lo stimatore di Kaplan-Meier permette di osservare l'andamento della probabilità di permanenza dei dipendenti nel tempo, senza fare assunzioni specifiche sulla distribuzione dei tempi di sopravvivenza (stimatore non parametrico).\
+Si determina la configurazione dei dati attraverso la funzione *Surv* del pacchetto **survival**, considerando il tempo *time_spend_company* e l'evento *left*.\
+Lo stimatore KM è implementato dalla funzione *survfit*.
+
+\medskip
+
+```{r echo=TRUE}
+library(survival)
+surv_object <- Surv(time = hr.df$time_spend_company, event = hr.df$left)
+km_fit <- survfit(surv_object ~ 1, data = hr.df)
+summary(km_fit) 
+```
+
+\medskip
+
+L'analisi evidenzia che circa il 70% dei dipendenti rimane in azienda dopo 4 anni. Tale percentuale scende drasticamente al quinto anno, sia per gli eventi che si manifestano ma anche, e soprattutto, perché il dipendente esce dall'osservazione. Il grafico seguente ne mostra l'andamento rispetto al tempo. \
+
+\medskip
+
+```{r fig.width=8, fig.height=4}
+library(survminer)
+ggsurvplot(km_fit, 
+           title = "Curva di Sopravvivenza generale",
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = TRUE, 
+           risk.table = FALSE,
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend.title = "",legend = "none"
+           )  
+```
+
+\medskip
+
+La curva di sopravvivenza mostra una progressiva riduzione della probabilità di restare in azienda, con un calo più marcato tra il terzo ed il quinto anno di lavoro.\
+Il valore degli intervalli di confidenza indica una certa variabilità nei dati, suggerendo che alcune categorie di dipendenti possono avere una certa incidenza sulla probabilità di abbandono rispetto alla media complessiva.\
+
+\newpage
+
+### Curva di sopravvivenza per stipendio
+
+\medskip
+
+La curva di sopravvivenza per livello salariale mostra chiaramente che i dipendenti con stipendio basso tendono ad abbandonare l'azienda prima di coloro che hanno uno stipendio medio o alto. La fascia *high* rimane significativamente sopra le altre, indicando una maggiore probabilità di rimanere in azienda nel lungo periodo.
+
+\medskip
+
+```{r }
+km.fit.salary <- survfit(surv_object ~ salary, data = hr.df)
+ggsurvplot(km.fit.salary, 
+           title = "Curva di Sopravvivenza per livello salariale",
+           xlab = "anni in azienda", ylab = "probabilità di restare",
+           conf.int = FALSE, pval = FALSE,  
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend.title = "Salary level",
+           legend.labs = gsub("salary=", "", names(km.fit.salary$strata)),
+           legend = c(0.1, 0.2)
+)
+
+```
+
+```{r }
+summary(km.fit.salary)
+```
+\medskip
+
+Come si legge dal *summary*, il **survival** (probabilità di sopravvivenza/permanenza) dopo 5 anni è pari al 78% per chi ha uno stipendio alto, al 55% per chi ha uno stipendio medio e al 40% per chi ha uno stipendio basso. \
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$salary)
+
+```
+\medskip
+
+Il test **Log-Rank**, implementato da **survdiff**, determina la significatività delle fasce rispetto alla permanenza in azienda. Si nota una significativa differenza tra il valore atteso e quello osservato, soprattutto per la fascia alta (4 eventi osservati su 11 attesi) e la fascia bassa (73 osservati su 57 attesi).\
+Il *p-value* rilevato, nettamente inferiori ai valori di soglia standard (0.05 o 0.01), permette di **rifiutare** l'ipotesi nulla H0, ipotesi secondo la quale il livello salariale non sia un fattore determinante nella permanenza in azienda.\
+
+\newpage
+
+### Curva di sopravvivenza per promozione
+
+\medskip
+
+Il dataset presenta una percentuale bassa (circa il 2%) di dipendenti che hanno ricevuto una promozione negli ultimi 5 anni. Per tale gruppo, nessuno ha manifestato l'evento e tutti sono stati censurati dopo al più 5 anni, come si evince anche dalla curva di sopravvivenza.\
+
+\medskip
+
+```{r }
+
+km.fit.promo <- survfit(surv_object ~ hr.df$promotion_last_5years, data = hr.df)
+ggsurvplot(km.fit.promo, 
+           title = "Curva di Sopravvivenza per promozione (negli ultimi 5 anni)", 
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = FALSE, 
+           risk.table = FALSE, 
+           pval = FALSE,
+           legend.title = "Promotion", legend.labs = c("No", "Yes"),
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend = c(0.1, 0.2))
+```
+
+\medskip
+
+Il test Log-Rank non evidenzia una differenza tra valori attesi ed osservati tra i due gruppi. Il p-value infatti è superiore a 0.05, pertanto **non si rifiuta H0** secondo la quale i due valori di *promotion_last_5years* non incidono significativamente sulla sopravvivenza.
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$promotion_last_5years)
+```
+\newpage
+
+### Curva di sopravvivenza per ore mensili lavorate
+
+\medskip
+
+La curva di sopravvivenza mostrata di seguito evidenzia una maggiore probabilità di permanenza per coloro che lavorano un numero di ore mensili *standard* (fascia media), mentre ad abbandonare l’azienda con maggiore probabilità sono coloro che lavorano *overtime*. Per questi ultimi, infatti, la probabilità di sopravvivenza scende a circa 0.50 dal quarto anno. Come evidenziato in precedenza, anche chi lavora poche ore ha una probabilità di lasciare l’azienda più alta rispetto alla fascia media.\
+Da notare anche l’accavallamento delle curve per i vari valori, il che potrebbe indicare una dipendenza dei rischi dal fattore tempo, come verrà approfondito successivamente con il modello di Cox.
+
+\medskip
+
+```{r }
+
+km.fit.hours <- survfit(surv_object ~ hours_cat, data = hr.df)
+ggsurvplot(km.fit.hours, 
+           title = "Curva di Sopravvivenza per ore mensili lavorate", 
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = FALSE, 
+           risk.table = FALSE, 
+           pval = FALSE,
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend = c(0.1, 0.22),
+           legend.title = "Monthly hours",
+           legend.labs = gsub("hours_cat=", "", names(km.fit.hours$strata)))
+
+```
+\medskip
+
+I risulati del test Log-Rank mostrati di seguito confermano che tale variabile risulta essere significativamente influente sulla permanenza in azienda: infatti i valori di *(O-E)^2/V* alti indicano una discrepanza rilevante tra valori attesi e valori osservati, ed il p-value estremamente piccolo conferma che l'ipotesi H0 viene rifiutata.
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$hours_cat)
+
+```
+
+\newpage
+
+### Curva di sopravvivenza per numero di progetti
+
+\medskip
+
+La curva mostra come i dipendenti con un numero molto basso (2) o molto alto (6-7) di progetti abbiano una maggiore probabilità di lasciare l'azienda rispetto a coloro che lavorando su un numero di progetti intermedio, come già accennato nell'analisi preliminare.
+
+\medskip
+
+```{r }
+km.fit.nproj <- survfit(surv_object ~ number_project, data = hr.df)
+ggsurvplot(km.fit.nproj, 
+           title = "Curva di Sopravvivenza per numero progetti", 
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = FALSE, 
+           risk.table = FALSE, 
+           pval = FALSE,
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend = c(0.1, 0.25),
+           legend.title = "N projects",
+           legend.labs = gsub("number_project=", "", names(km.fit.nproj$strata)))
+
+```
+\medskip 
+
+Si noti come per il gruppo di dipendenti con il numero di progetti massimo il crollo della curva sia drastico. Dal *summary* di seguito si evince che degli 8 dipendenti che lavorano su 7 progetti, 5 abbandonano dopo 4 anni, gli 3 al quinto anno, portando a zero la *survival*.
+
+\medskip 
+
+```{r }
+summary(km.fit.nproj)
+```
+
+\medskip 
+
+Il test Log-Rank conferma che il numero di progetti assegnati influisce significativamente sulla durata della permanenza in azienda (p-value estremamente basso) e che la discrepanza tra valori osservati e valori attesi è molto alta, soprattutto per la fascia bassa (2 progetti).\
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$number_project)
+
+```
+
+\newpage
+
+### Curva di sopravvivenza per valutazione recente
+
+\medskip
+
+La valutazione delle performance presenta una curva di sopravvivenza con evidenti sovrapposizioni. I dipendenti con una valutazione alta mostrano una maggiore propensione all'abbandono, probabilmente perché associati ad un numero elevato di progetti, fattore che ha un impatto rilevante sull'abbandono, come descritto in precedenza.\
+
+\medskip
+
+```{r }
+
+km.fit.eval <- survfit(surv_object ~ evaluation_cat, data = hr.df)
+ggsurvplot(km.fit.eval, 
+           title = "Curva di Sopravvivenza per valutazione recente", 
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = FALSE, 
+           risk.table = FALSE, 
+           pval = FALSE,
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend = c(0.12, 0.2),
+           legend.title = "Evaluation ",
+           legend.labs = gsub("evaluation_cat=", "", names(km.fit.eval$strata)))
+```
+
+\medskip
+
+Il test Log-Rank indica che le differenze tra le categorie di valutazione non sono altamente significative. Il p-value infatti è > 0.05 ed anche in questo caso l'ipotesi H0 non si può rifiutare.\
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$evaluation_cat)
+
+```
+
+\newpage
+
+### Curva di sopravvivenza per livello di soddisfazione
+
+\medskip
+
+Anche per il livello di soddisfazione le curve di sopravvivenza si incrociano: dipendenti con livelli di soddisfazione bassi lasciano l'azienda molto più frequentemente rispetto a quelli con livelli medi. Ma anche chi dichiara un livello di soddisfazione molto alto dopo 5 anni presenta una probabilità dimezzata di rimanere in azienda.\
+
+\medskip
+
+```{r }
+
+km.fit.sat <- survfit(surv_object ~ satisfaction_cat, data = hr.df)
+ggsurvplot(km.fit.sat, 
+           title = "Curva di Sopravvivenza per livello di soddisfazione", 
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = FALSE, 
+           risk.table = FALSE, 
+           pval = FALSE,
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend = c(0.1, 0.2),
+           legend.title = "Evaluation ",
+           legend.labs = gsub("satisfaction_cat=", "", names(km.fit.sat$strata)))
+
+```
+\medskip
+
+Il test Log-Rank conferma una differenza altamente significativa tra i gruppi, classificando il livello di soddisfazione del dipendente come uno dei fattori che influenzano la permanenza aziendale (p-value molto basso).\
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$satisfaction_cat)
+
+```
+\newpage
+
+### Curva di sopravvivenza per reparto
+
+\medskip
+
+L'analisi per reparto mostra differenze marcate solo tra alcuni valori: in particolare si registra una maggiore sopravvivenza tra i dipendenti dei reparti *management* e *RandD*, e maggiori abbandoni per quelli del reparto *support* e *technical*. Per *product_mng* non si hanno osservazioni dopo i 6 anni, nonostante si registrino pochi eventi di abbandono rispetto alle censure.
+
+```{r }
+
+km.fit.dep <- survfit(surv_object ~ department, data = hr.df)
+ggsurvplot(km.fit.dep, 
+           title = "Curva di Sopravvivenza per reparto", 
+           xlab = "anni in azienda",
+           ylab = "probabilità di restare",
+           conf.int = FALSE, 
+           risk.table = FALSE, 
+           pval = FALSE,
+           ggtheme = theme_classic(),
+           palette = "Set1",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend.title = "Department",
+           legend.labs = gsub("department=", "", names(km.fit.dep$strata)),
+           legend = c(0.13, 0.4))
+
+```
+Il test Log-Rank mostra delle discrepanze tra valori attesi ed osservati solo per alcuni reparti. Nonostante il p-value non sia piccolo come per altri fattori, rimane comunque significativamente al di sotto della soglia standard, per cui si può rifiutare H0 e si può determinare il reparto come una variabile influente sull'abbandono dell'azienda.
+
+```{r }
+survdiff(surv_object ~ hr.df$department)
+
+```
+
+\newpage
+
+### Curva di sopravvivenza per infortunio sul lavoro
+
+\medskip
+
+L'aver avuto un infortunio sul lavoro determina una minore probabilità di abbandono dell'azienda, probabilmente, come detto in fase preliminare, perché il dipendente riceve le opportune attenzioni (rimborso assicurativo?) ed è meno portato a lasciare l'azienda.
+
+\medskip
+
+```{r }
+km.fit.wa <- survfit(surv_object ~ work_accident, data = hr.df)
+ggsurvplot(km.fit.wa, 
+           title = "Curva di Sopravvivenza per infortuni sul lavoro",
+           xlab = "anni in azienda", ylab = "probabilità di restare",
+           conf.int = FALSE, pval = FALSE,  
+           ggtheme = theme_classic(),
+           palette = "Dark2",
+           censor.shape = 124, censor.size = 3,
+           surv.median.line = "none",
+           legend.title = "Accident", legend.labs = c("No", "Yes"),
+           legend = c(0.1, 0.2)
+)
+
+```
+
+\medskip
+
+Anche il test Log-Rank mostra un valore osservato di eventi nettamente inferiore e quello atteso (3 vs 12) ed un p-value tale da rifiutare l'ipotesi H0. Pertanto può considerarsi un fattore significativamente influente rispetto al verificarsi dell'evento.
+
+\medskip
+
+```{r }
+survdiff(surv_object ~ hr.df$work_accident)
+
+```
+\newpage
+
+## Modello di regressione di Cox
+
+\medskip
+
+Nel presente studio si utilizza il **modello di rischi proporzionali di Cox** per stimare gli effetti delle variabili sul tempo di permanenza in azienda, senza fare assunzioni specifiche sulla forma della funzione di rischio di base. Questo modello presuppone che i rischi siano proporzionali nel tempo, consentendo così di valutare l'impatto delle variabili indipendenti sui tempi di sopravvivenza.\
+In questa sezione, è stata condotta la verifica della proporzionalità dei rischi per ciascuna covariata.
+
+### Stipendio
+
+\medskip
+
+```{r }
+cox.salary <- coxph(surv_object ~ salary, hr.df)
+summary(cox.salary)
+
+test.salary <- cox.zph(cox.salary)
+test.salary
+
+```
+
+\medskip
+
+I dipendenti con stipendio basso presentano un rischio di abbandono quasi 4 volte più alto rispetto a chi ha uno stipendio alto (riferimento). Anche chi percepisce uno stipendio medio presenta un rischio più elevato di abbandono rispetto alla fascia di riferimento, ma la differenza non è statisticamente significativa (*Pr(>|z|)>0.05*).\
+
+La verifica della proporzionalità dei rischi conferma che il modello di Cox è applicabile a questa variabile: il **p-value pari a 0.69** (>0.05) non consente di rifiutare l'ipotesi nulla H0 che sostiene la proporzionalità dei rischi.
+
+\newpage
+
+### Promozione negli ultimi 5 anni
+
+\medskip
+
+```{r }
+cox.promo <- coxph(surv_object ~ hr.df$promotion_last_5years, data= hr.df)
+summary(cox.promo)
+
+test.promo <- cox.zph(cox.promo)
+test.promo
+
+```
+\medskip
+
+La variabile *promotion_last_5years* non è significativamente associata al rischio di uscita dall'azienda (Pr(>|z|) alto e IC infinito) suggeriscono che l'effetto di questa variabile è altamente incerto e non significativo.\
+La proporzionalità dei rischi è verificata, ma la capacità predittiva del modello è quasi casuale (0.512).
+
+\newpage
+
+### Reparto
+
+\medskip
+
+```{r }
+
+cox.dep <- coxph(surv_object ~ hr.df$department)
+summary(cox.dep)
+
+test.dep <- cox.zph(cox.dep)
+test.dep
+
+```
+\medskip
+
+Nessun reparto aziendale incide in modo molto significativo sul rischio di abbandono, infatti i valori di *Pr(>|z|)* che indicano la probabilità che il valore osservato del test statistico si verifichi sotto H0, sono tutti sopra la soglia di 0.05. I valori più bassi (marginalmente significativi) sono legati ai reparti *HR*, *support* e *technical*, i cui dipendenti presentanto una probabilità di abbandono superiore rispetto a chi lavora nel reparto *account* (riferimento) di circa 2-3 volte.\
+Anche in questo caso, il test di proporzionalità dei rischi indica che il modello di Cox è adeguato (p-value=0.13).
+
+### Infortuni sul lavoro
+
+\medskip
+
+```{r }
+cox.wa <- coxph(surv_object ~ hr.df$work_accident, data= hr.df)
+summary(cox.wa)
+
+test.wa <- cox.zph(cox.wa)
+test.wa
+
+```
+
+\medskip
+
+I dipendenti che non hanno avuto un infortunio sul lavoro presentano un rischio di abbandono 5 volte superiore rispetto a chi lo ha subito, il coefficiente risulta significativo (*Pr(>|z|)<0.01*).\
+La verifica della proporzionalità dei rischi è confermata dal p-value pari a 0.9.
+
+\newpage
+
+### Violazione dell'ipotesi di prorzionalità dei rischi
+
+\medskip
+
+In questa sezione si riportano sinteticamente i risultati della funzione **cox.zph()** di R, utilizzata per eseguire il *Test di Proporzionalità dei Rischi di Schoenfeld* per le covariate per cui l'assunzione di proporzionalità dei rischi è violata (**p-value<0.01**), e per cui il modello di Cox non risulta quindi applicabile.
+
+\medskip
+
+```{r fig.width=8, fig.height=2.5}
+cox.proj <- coxph(surv_object ~ hr.df$number_project, data= hr.df)
+test.proj <- cox.zph(cox.proj)
+
+resid_data <- as.data.frame(test.proj$y)  
+resid_data$time <- test.proj$x 
+colnames(resid_data)[1] <- "Residuals"
+
+ggplot(resid_data, aes(x = time, y = Residuals)) +  
+  geom_point(color = "red", size = 2) + 
+  geom_smooth(method = "loess", color = "blue", se = TRUE) +  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") + 
+  labs(title = "Test di Proporzionalità dei Rischi - Numero di progetti",
+       x = "Tempo",
+       y = "Residui di Schoenfeld") +
+  theme_minimal()
+
+test.proj
+
+```
+\medskip
+\medskip
+```{r fig.width=8, fig.height=2.5}
+cox.hours <- coxph(surv_object ~ hr.df$hours_cat)
+test.hours <- cox.zph(cox.hours)
+
+resid_data <- as.data.frame(test.hours$y)  
+resid_data$time <- test.hours$x  
+colnames(resid_data)[1] <- "Residuals"
+
+ggplot(resid_data, aes(x = time, y = Residuals)) +  
+  geom_point(color = "red", size = 2) + 
+  geom_smooth(method = "loess", color = "blue", se = TRUE) +  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") + 
+  labs(title = "Test di Proporzionalità dei Rischi - Ore mensili lavorate",
+       x = "Tempo",
+       y = "Residui di Schoenfeld") +
+  theme_minimal()
+
+test.hours
+```
+\newpage
+
+```{r fig.width=8, fig.height=2.5}
+cox.sat <- coxph(surv_object ~ hr.df$satisfaction_cat)
+test.sat <- cox.zph(cox.sat)
+
+resid_data <- as.data.frame(test.sat$y) 
+resid_data$time <- test.sat$x  
+
+colnames(resid_data)[1] <- "Residuals"
+
+ggplot(resid_data, aes(x = time, y = Residuals)) +  
+  geom_point(color = "red", size = 2) +  
+  geom_smooth(method = "loess", color = "blue", se = TRUE) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +  
+  labs(title = "Test di Proporzionalità dei Rischi - Livello di soddisfazione",
+       x = "Tempo",
+       y = "Residui di Schoenfeld") +
+  theme_minimal()
+
+test.sat
+```
+
+\medskip
+\medskip
+
+```{r fig.width=8, fig.height=2.5}
+cox.eva <- coxph(surv_object ~ hr.df$evaluation_cat)
+test.eva <- cox.zph(cox.eva)
+
+resid_data <- as.data.frame(test.eva$y)  
+resid_data$time <- test.eva$x 
+colnames(resid_data)[1] <- "Residuals"
+
+ggplot(resid_data, aes(x = time, y = Residuals)) +  
+  geom_point(color = "red", size = 2) + 
+  geom_smooth(method = "loess", color = "blue", se = TRUE) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") + 
+  labs(title = "Test di Proporzionalità dei Rischi - Valutazione recente",
+       x = "Tempo",
+       y = "Residui di Schoenfeld") +
+  theme_minimal()
+
+test.eva
+```
+
+\newpage
+
+### Modello di Cox con più covariate
+
+Si valuta il modello di Cox inserendo tutte le 4 covariate per cui è stata verificata con successo la proporzionalità dei rischi, quindi il livello salariale, il reparto, infortunio e promozione.
+
+```{r }
+cox.mix1 <- coxph(surv_object ~ salary + department + work_accident + promotion_last_5years, data= hr.df)
+summary(cox.mix1)
+
+```
+
+\medskip
+
+Il valore di **concordance** di **0.674** indica una moderata capacità del modello di discriminare l'evento. I p-value dei test (Likelihood ratio, Wald, e Score) sono tutti inferiori a 0.05, indicando che il modello è significativo.\
+Tra i coefficienti, quello risulta più significativo è l'evento di infortunio sul lavoro. L'*odds ratio* pari a 0.2646 conferma che un incidente sul lavoro riduce il rischio di abbandono. Il coefficiente di promozione ha p-value=1 e IC infinito, quindi si considera non significativo nel modello. Il coefficiente per salario basso implica un rischio 2.31 volte più grande rispetto ad un salario alto, anche se il p-value indica una significatività moderata.
+
+\newpage
+
+Non avendo un impatto significativo, si rivaluta il modello eliminando la variabile legata alla promozione negli ultimi 5 anni. Di seguito il modello di Cox con livello salariale, il reparto e infortunio.
+
+```{r }
+cox.mix2 <- coxph(surv_object ~ salary + department + work_accident , data= hr.df)
+summary(cox.mix2)
+
+```
+
+\medskip
+Il modello senza promotion presenta una concordance simile a quella del modello precedente.\
+Migliora lievemente la significatività della variabile salario (p-value=0.0665).
+
+\newpage
+
+Poiché il modello di Cox presuppone la proporzionalità dei rischi, non è stato inserito il livello di soddisfazione. Tuttavia, nelle sezioni precedenti è stato classificato come fattore determinante per la permanenza in azienda.\
+Il modello di seguito considera, oltre alle variabili di cui al modello precedente, la *stratificazione* della categoriale del livello di soddisfazione, attraverso la funzione R *strata*. Stratificando alcune variabili, infatti, puoi eliminare la necessità di modellare direttamente il loro effetto sui rischi proporzionali, permettendo al modello di concentrarsi meglio sulle altre covariate.
+
+\medskip
+
+```{r }
+cox.mix4 <- coxph(surv_object ~ salary + department + work_accident + strata(satisfaction_cat), data= hr.df)
+summary(cox.mix4)
+
+```
+
+\medskip
+
+La concordance del modello è pari a **0.746**, la più alta tra i modelli finora analizzati.\
+Presenta inoltre una migliore significatività delle variabili relative a *salary* (low e medium) e *work_accident*, aumentando anche quella del *department* HR. Anche i valori dei test risultano maggiormente significativi rispetto ai modelli precedenti.
+
+\newpage
+
+### Modello di Cox con una nuova variabile (trust)
+
+Dall’analisi svolta finora emerge che la non linearità delle covariate rispetto all’abbandono dell’azienda è principalmente dovuta al carico di lavoro dei dipendenti. Infatti, i dipendenti tendono a lasciare l’azienda non solo quando il carico di lavoro è eccessivo, ma anche quando risulta troppo basso, ovvero quando vengono assegnati pochi progetti e lavorano meno ore.\
+Questo fenomeno probabilmente si traduce in una minore stima e fiducia nei confronti del dipendente.\
+Per spiegare meglio tale fenomeno, si è deciso di inserire una nuova variabile nel dataframe, in grado di descrivere il livello di fiducia assegnato al dipendente. In particolare, la variabile **trust** verrà impostata a 0 quando il numero di progetti è inferiore a 3, soglia individuata nell’analisi preliminare oltre la quale il carico di lavoro assume un impatto diretto sull’abbandono.
+
+\medskip
+
+```{r echo=TRUE}
+hr.df$trust <- ifelse(hr.df$number_project < 3, 0, 1)
+
+```
+
+\medskip
+
+Si aggiunge **trust** al modello, eliminando le covariate a rischi non proporzionali.
+
+\medskip
+
+```{r }
+cox.mix5 <- coxph(surv_object ~ salary + department + work_accident + trust, data= hr.df)
+summary(cox.mix5)
+
+```
+
+\medskip
+
+Nel modello che include **trust**, i risultati evidenziano una notevole capacità discriminante (concordance pari a **0.866**. Questo valore suggerisce che il modello è molto efficace nel distinguere tra i dipendenti che lasciano l’azienda e quelli che vi restano.\
+Trust risulta la variabile più determinante: il suo coefficiente è pari a -2.58528 con un p-value estremamente basso. L’hazard ratio associato a trust è 0.07537, il che indica che i dipendenti con trust pari a 1 (ossia, quelli a cui viene mostrata fiducia, con almeno 3 progetti assegnati) hanno un rischio di abbandono inferiore di circa il 92,5% rispetto a quelli con trust pari a 0. Questi risultati sottolineano l’importanza della fiducia e, per estensione, della percezione del carico di lavoro e del riconoscimento, come fattori protettivi contro il turnover.\
+Anche le variabili relative allo stipendio hanno effetti più rilevanti che nei precedenti modelli, ed entrano in gioco per significatività anche le variabili relative ai reparti *HR*, *marketing*, *support* e *technical*.\
+I test globali del modello (Likelihood Ratio, Wald e Score test) confermano l’elevata significatività complessiva.\
+
+\newpage
+
+# Conclusioni
+
+\medskip
+
+L’analisi di sopravvivenza condotta su questo dataset ha permesso di analizzare i fattori che influenzano la **permanenza dei dipendenti in azienda**. Attraverso l’uso dello stimatore di **Kaplan-Meier**, è stato evidenziato come variabili quali stipendio, promozioni, soddisfazione lavorativa e carico di lavoro abbiano un impatto significativo sulla probabilità di permanenza. I dipendenti con stipendi più bassi tendono a lasciare l’azienda più rapidamente, così come coloro che hanno un carico di lavoro troppo alto o troppo basso.\
+
+L’analisi della **regressione di Cox** ha confermato questi risultati, evidenziando ulteriormente il ruolo determinante di alcune covariate. In particolare, l’introduzione della variabile **trust**, definita in funzione del numero di progetti assegnati, ha consentito di catturare l’effetto della fiducia e del riconoscimento sul turnover. Il modello mostra che un valore elevato di trust (ossia quando i dipendenti hanno almeno 3 progetti assegnati) è associato ad una rilevante riduzione del rischio di uscita, suggerendo che sentirsi stimati e valorizzati può essere un importante fattore protettivo contro l’abbandono.\
+
+Altri fattori, come il reparto di appartenenza e il verificarsi di infortuni sul lavoro, influenzano il rischio di uscita, sebbene in misura minore. Un aspetto critico dell’analisi è stato il controllo dell’ipotesi di proporzionalità dei rischi, che ha richiesto l’introduzione di stratificazioni per migliorare l’adeguatezza del modello. L’inclusione di covariate multiple, unitamente all’aggiunta della variabile trust, ha permesso di affinare le previsioni e ottenere modelli più robusti e predittivi.\
+
+\medskip
+
+Questo project work rappresenta un’applicazione delle competenze acquisite durante il corso di **Statistical Models**. Inoltre, il percorso di apprendimento è in continua evoluzione nel master: le conoscenze che acquisiremo negli altri moduli offriranno ulteriori spunti e strumenti per perfezionare l’analisi, ampliando le prospettive di ricerca sul tema della permanenza dei dipendenti.
